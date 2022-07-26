@@ -1,3 +1,3 @@
 # Proyecto-final
-###Manuel Peralta 
-###B65309
+###Manuel Peralta###
+###B65309###
