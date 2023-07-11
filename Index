@@ -1,0 +1,318 @@
+---
+title: "Cantidad de orquídeas en Costa Rica en el 2023"
+author: "Manuel Peralta Reyes y Kevin Córdoba Leitón"
+format: 
+  html:
+    page-layout: custom
+    lang: es
+    theme: litera    
+    margin-top: 40px
+    margin-left: 40px
+    margin-bottom: 15px        
+    margin-right: 15px
+server: shiny
+---
+```{r} 
+#| label: carga-paquetes
+#| context: setup
+#| warning: false
+#| message: false
+
+# Carga de paquetes
+library(tidyverse)
+library(DT)
+library(raster)
+library(terra)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+library(ggplot2)
+library(plotly)
+library(rsconnect)
+library(shiny)
+library(shinyWidgets)
+library(rgdal)
+library(sf)
+library(rmarkdown)
+```
+
+
+```{r}
+#| label: carga-muestra-datosareas
+#| context: data
+#| code-fold: true
+# Carga de los datos de areas de conservación
+areas_conserva <-st_read(
+    dsn = "https://raw.githubusercontent.com/gf0604-procesamientodatosgeograficos/2023-i/main/datos/sinac/areas_conservacion_simp_10m.geojson",
+    quiet = TRUE
+  ) |>
+  st_transform(4326)
+
+
+#| label: carga-muestra-datosorquideas
+#| context: data
+#| code-fold: true
+# Carga de datos de orquídeas de Costa Rica
+orquideas <-st_read("C:/Users/manup/Desktop/PROCESAMIENTO DATOS/orquideas.csv",options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude", 
+      "Y_POSSIBLE_NAMES=decimalLatitude"   
+    ),
+    quiet = TRUE)
+
+
+# Asignación del CRS WGS84
+st_crs(orquideas) <- 4326
+
+```
+
+
+```{r}
+#| code-fold: true
+# Unión espacial de orquídeas y áreas de conservación
+orquideas_union_areas <- st_join(
+  x = orquideas,
+  y = dplyr::select(areas_conserva, nombre_ac), 
+  join = st_within
+)
+```
+
+
+
+```{r}
+#| code-fold: true
+# Conteo de la cantidad de especies de orquídeas en áreas de conservación
+riqueza_especies_orquideas_areas <- orquideas_union_areas %>%
+  st_drop_geometry() %>%
+  group_by(nombre_ac) %>%
+  summarize(riqueza_especies_orquideas = n_distinct(species, na.rm = TRUE))
+```
+
+
+```{r}
+#| code-fold: true
+# Unión (no espacial) de áreas de conservación y cantidad de orquídeas
+areas_union_riqueza <- left_join(
+  x = areas_conserva,
+  y = dplyr::select(riqueza_especies_orquideas_areas, nombre_ac, riqueza_especies_orquideas),
+  by = "nombre_ac"
+) %>%
+  replace_na(list(riqueza_especies_orquideas = 0))
+
+
+
+```
+  
+
+```{r}
+#| label: panel-widgets-entrada
+#| warning: false
+#| panel: sidebar
+
+# Lista ordenada de especies
+# con un elemento adicional = "Todas"
+lista_especies <- unique(orquideas_union_areas$species)
+lista_especies <- sort(lista_especies)
+lista_especies <- c("Todas", lista_especies)
+
+# Widget de lista de selección de especies
+selectInput(
+  inputId = "especie",     
+  label = "Especie",        
+  choices = lista_especies, 
+  selected = "Todas")
+
+# Widget de deslizador de rango de años
+orquideas$year <- as.numeric(orquideas$year)
+
+sliderInput(
+  inputId = "Orquideas",
+  label = "Cantidad durante los años",
+  min = min(orquideas$year, na.rm = TRUE),
+  max = max(orquideas$year, na.rm = TRUE),
+  value = c(min(orquideas$year, na.rm = TRUE), max(orquideas$year, na.rm = TRUE)),
+  step = 1,
+  sep = ""
+)
+
+# Widget de botones de radio de áreas de conservación
+radioButtons(
+  inputId = "conservation_area",
+  label = "Botones de radio de áreas de conservación",
+  choices = unique(areas_conserva$nombre_ac),
+  selected = NULL
+)
+```
+
+
+```{r}
+
+  
+#| label: panel-widgets-salida
+#| panel: fill
+
+h3("Tabla de cantidad de registros de presencia de orquídeas en areas de conservacion")
+HTML("<p>")
+dataTableOutput(outputId = "tabla")
+
+h3("Mapa de cantidad de registros de presencia de orquídeas en areas de conservacion")
+HTML("<p>")
+leafletOutput(outputId = "mapa")
+
+h3("Grafico de cantidad de registros de presencia de orquídeas en áreas de conservacion")
+HTML("<p>")
+plotlyOutput(outputId =  "grafico")
+
+```
+
+
+
+
+```{r}
+
+
+  
+#| label: servidor
+#| context: server
+# Función reactiva para filtrar 
+filtrar_orquideas_union_areas <- reactive({
+  orquideas_union_areas_filtrados <- orquideas_union_areas
+  if (input$especie != "Todas") {
+    orquideas_union_areas_filtrados <-
+      orquideas_union_areas_filtrados |>
+      filter(species == input$species)
+  }
+  
+  return(orquideas_union_areas_filtrados)
+})
+
+# Tabla de registros de la especie de orquídeas en Costa Rica 
+# En el servidor
+output$tabla <- DT::renderDataTable({
+  orquideas_union_areas_filtrados <- filtrar_orquideas_union_areas()
+  DT::datatable(orquideas_union_areas_filtrados, options = list(pageLength = 5))
+})
+
+# En la UI
+DT::dataTableOutput("tabla")
+
+
+
+```
+
+
+```{r}
+
+
+
+# Mapa de cantidad de registros de presencia de orquídeas en áreas de conservación
+output$mapa <- renderLeaflet({
+ #Paleta de colores de riqueza de especies
+colores_riqueza_especies <- colorNumeric(
+  palette = "Reds",
+  domain = areas_union_riqueza$riqueza_especies_orquideas,
+  na.color = "transparent"
+)
+
+# Paleta de colores de especies
+colores_especies <- colorFactor(
+  palette = viridis(length(unique(orquideas$species))),
+  domain = orquideas$species)
+
+# Mapa leaflet
+leaflet() %>%
+  setView(lng = -84.19452, lat = 9.572735, zoom = 7) %>%
+  addTiles(group = "Mapa general (OpenStreetMap)") %>%
+  addProviderTiles(
+    providers$Esri.WorldImagery,
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) %>%
+  addPolygons(
+    data = areas_union_riqueza,
+    fillColor = ~colores_riqueza_especies(areas_union_riqueza$riqueza_especies_orquideas),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      "<strong>AreaConservación:</strong>", areas_union_riqueza$nombre_ac, "<br/>",
+      "<strong>Riqueza de especies:</strong>", areas_union_riqueza$riqueza_especies_orquideas
+    ),
+    group = "Riqueza de especies"
+  ) %>%
+  addScaleBar(
+    position = "bottomleft",
+    options = scaleBarOptions(imperial = FALSE)
+  ) %>%
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = areas_union_riqueza$riqueza_especies_orquideas,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) %>%
+  addCircleMarkers(
+    data = orquideas,
+    stroke = FALSE,
+    radius = 4,
+    fillColor = ~colores_especies(orquideas$species),
+    fillOpacity = 1.0,
+    popup = paste(
+      "<strong>Especie:</strong>", orquideas$species, "<br/>",
+      "<strong>Localidad:</strong>", orquideas$locality, "<br/>",
+      "<strong>Fecha:</strong>", orquideas$eventDate, "<br/>",
+      "<strong>Fuente:</strong>", orquideas$institutionCode, "<br/>",
+      "<a href='", orquideas$occurrenceID, "'>Más información</a>"
+    ),
+    group = "Registros de presencia"
+  ) %>%
+  addLayersControl(
+    baseGroups = c("Mapa general (OpenStreetMap)", "Imágenes satelitales (ESRI World Imagery)"),
+    overlayGroups = c("Riqueza de especies", "Registros de presencia"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  addResetMapButton() %>%
+  addSearchOSM() %>%
+  addMouseCoordinates() %>%
+  addFullscreenControl() %>%
+  hideGroup("Registros de presencia")})
+
+```
+
+```{r}
+
+
+
+# Gráfico de barras de cantidad de registros de presencia de orquídeas en áreas de conservación
+output$grafico <- renderPlotly({
+  # Ordenar áreas de conservación por cantidad de registros
+  areas_ordenadas <- areas_union_riqueza %>%
+    arrange(desc(riqueza_especies_orquideas))
+  
+  # Gráfico ggplot2
+  grafico_ggplot2 <- areas_ordenadas %>%
+    ggplot(
+      aes(
+        x = reorder(nombre_ac, riqueza_especies_orquideas), 
+        y = riqueza_especies_orquideas
+      )
+    ) +
+    geom_bar(stat = "identity") +
+    xlab("Área de conservación") +
+    ylab("Cantidad de registros de presencia") +
+    ggtitle("Cantidad de registros de presencia de orquídeas en áreas de conservación") +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  # Convertir a plotly para hacerlo interactivo
+  ggplotly(grafico_ggplot2, tooltip = "text") %>% 
+    config(locale = 'es')
+})
+  
+output
+
+
+```
+
+
+
